@@ -1,14 +1,28 @@
 ################################################################################
-# Unified IRSA Module
-# Supports all IRSA roles with enable flags
+# Unified Pod Identity Module
+# Migrated from IRSA to EKS Pod Identity (AWS recommended approach)
 ################################################################################
 
-locals {
-  oidc_hostpath = replace(var.oidc_issuer_url, "https://", "")
+################################################################################
+# Common Trust Policy for Pod Identity
+################################################################################
+
+data "aws_iam_policy_document" "pod_identity_trust" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ]
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
 }
 
 ################################################################################
-# 1. Bedrock IRSA
+# 1. Bedrock Pod Identity
 ################################################################################
 
 locals {
@@ -105,6 +119,14 @@ locals {
     local.bedrock_knowledge_bases_statement,
     local.bedrock_guardrails_statement
   )
+
+  # Parse bedrock service accounts into namespace:serviceaccount pairs
+  bedrock_sa_pairs = var.enable_bedrock ? [
+    for sa in var.bedrock_service_accounts : {
+      namespace       = split(":", sa)[0]
+      service_account = split(":", sa)[1]
+    }
+  ] : []
 }
 
 resource "aws_iam_policy" "bedrock" {
@@ -119,32 +141,38 @@ resource "aws_iam_policy" "bedrock" {
   tags = var.tags
 }
 
-module "bedrock_irsa_role" {
-  count   = var.enable_bedrock ? 1 : 0
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "5.58.0"
+resource "aws_iam_role" "bedrock" {
+  count              = var.enable_bedrock ? 1 : 0
+  name               = var.bedrock_role_name
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
+  tags               = var.tags
+}
 
-  role_name        = var.bedrock_role_name
-  role_policy_arns = { bedrock = aws_iam_policy.bedrock[0].arn }
+resource "aws_iam_role_policy_attachment" "bedrock" {
+  count      = var.enable_bedrock ? 1 : 0
+  role       = aws_iam_role.bedrock[0].name
+  policy_arn = aws_iam_policy.bedrock[0].arn
+}
 
-  oidc_providers = {
-    eks = {
-      provider_arn               = var.oidc_provider_arn
-      namespace_service_accounts = var.bedrock_service_accounts
-    }
-  }
+resource "aws_eks_pod_identity_association" "bedrock" {
+  for_each = var.enable_bedrock ? { for idx, sa in local.bedrock_sa_pairs : "${sa.namespace}-${sa.service_account}" => sa } : {}
+
+  cluster_name    = var.cluster_name
+  namespace       = each.value.namespace
+  service_account = each.value.service_account
+  role_arn        = aws_iam_role.bedrock[0].arn
 
   tags = var.tags
 }
 
 ################################################################################
-# 2. Postgres Backup IRSA (Dual Trust: RDS + OIDC)
+# 2. Postgres Backup Pod Identity (Dual Trust: RDS + Pod Identity)
 ################################################################################
 
 data "aws_iam_policy_document" "postgres_backup_trust" {
   count = var.enable_postgres_backup ? 1 : 0
 
-  # RDS service principal trust
+  # RDS service principal trust (for RDS S3 export)
   statement {
     actions = ["sts:AssumeRole"]
     effect  = "Allow"
@@ -155,26 +183,17 @@ data "aws_iam_policy_document" "postgres_backup_trust" {
     }
   }
 
-  # OIDC trust for EKS service accounts
+  # Pod Identity trust for EKS pods
   statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    effect  = "Allow"
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ]
+    effect = "Allow"
 
     principals {
-      type        = "Federated"
-      identifiers = [var.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_hostpath}:sub"
-      values   = ["system:serviceaccount:${var.postgres_backup_namespace}:${var.postgres_backup_service_account}"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_hostpath}:aud"
-      values   = ["sts.amazonaws.com"]
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
     }
   }
 }
@@ -265,8 +284,19 @@ resource "aws_iam_role_policy_attachment" "postgres_backup" {
   policy_arn = aws_iam_policy.postgres_backup[0].arn
 }
 
+resource "aws_eks_pod_identity_association" "postgres_backup" {
+  count = var.enable_postgres_backup ? 1 : 0
+
+  cluster_name    = var.cluster_name
+  namespace       = var.postgres_backup_namespace
+  service_account = var.postgres_backup_service_account
+  role_arn        = aws_iam_role.postgres_backup[0].arn
+
+  tags = var.tags
+}
+
 ################################################################################
-# 3. EBS CSI Driver IRSA
+# 3. EBS CSI Driver Pod Identity
 ################################################################################
 
 data "aws_iam_policy" "ebs_csi" {
@@ -274,36 +304,10 @@ data "aws_iam_policy" "ebs_csi" {
   name  = "AmazonEBSCSIDriverPolicy"
 }
 
-data "aws_iam_policy_document" "ebs_csi_trust" {
-  count = var.enable_ebs_csi ? 1 : 0
-
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    effect  = "Allow"
-
-    principals {
-      type        = "Federated"
-      identifiers = [var.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_hostpath}:sub"
-      values   = ["system:serviceaccount:${var.ebs_csi_namespace}:${var.ebs_csi_service_account}"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_hostpath}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
-
 resource "aws_iam_role" "ebs_csi" {
   count              = var.enable_ebs_csi ? 1 : 0
   name               = var.ebs_csi_role_name
-  assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust[0].json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
   tags               = var.tags
 }
 
@@ -313,8 +317,19 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   policy_arn = data.aws_iam_policy.ebs_csi[0].arn
 }
 
+resource "aws_eks_pod_identity_association" "ebs_csi" {
+  count = var.enable_ebs_csi ? 1 : 0
+
+  cluster_name    = var.cluster_name
+  namespace       = var.ebs_csi_namespace
+  service_account = var.ebs_csi_service_account
+  role_arn        = aws_iam_role.ebs_csi[0].arn
+
+  tags = var.tags
+}
+
 ################################################################################
-# 4. Cluster Autoscaler IRSA (Scoped Policy)
+# 4. Cluster Autoscaler Pod Identity
 ################################################################################
 
 resource "aws_iam_policy" "cluster_autoscaler" {
@@ -362,42 +377,70 @@ resource "aws_iam_policy" "cluster_autoscaler" {
   tags = var.tags
 }
 
-module "cluster_autoscaler_irsa_role" {
-  count   = var.enable_cluster_autoscaler ? 1 : 0
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "5.58.0"
+resource "aws_iam_role" "cluster_autoscaler" {
+  count              = var.enable_cluster_autoscaler ? 1 : 0
+  name               = var.cluster_autoscaler_role_name
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
+  tags               = var.tags
+}
 
-  role_name        = var.cluster_autoscaler_role_name
-  role_policy_arns = { autoscaling = aws_iam_policy.cluster_autoscaler[0].arn }
+resource "aws_iam_role_policy_attachment" "cluster_autoscaler" {
+  count      = var.enable_cluster_autoscaler ? 1 : 0
+  role       = aws_iam_role.cluster_autoscaler[0].name
+  policy_arn = aws_iam_policy.cluster_autoscaler[0].arn
+}
 
-  oidc_providers = {
-    eks = {
-      provider_arn               = var.oidc_provider_arn
-      namespace_service_accounts = ["${var.cluster_autoscaler_namespace}:${var.cluster_autoscaler_service_account}"]
-    }
-  }
+resource "aws_eks_pod_identity_association" "cluster_autoscaler" {
+  count = var.enable_cluster_autoscaler ? 1 : 0
+
+  cluster_name    = var.cluster_name
+  namespace       = var.cluster_autoscaler_namespace
+  service_account = var.cluster_autoscaler_service_account
+  role_arn        = aws_iam_role.cluster_autoscaler[0].arn
 
   tags = var.tags
 }
 
 ################################################################################
-# 5. Load Balancer Controller IRSA
+# 5. Load Balancer Controller Pod Identity
 ################################################################################
 
-module "lb_controller_irsa_role" {
-  count   = var.enable_lb_controller ? 1 : 0
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "5.58.0"
+data "aws_iam_policy" "lb_controller" {
+  count = var.enable_lb_controller ? 1 : 0
+  name  = "AWSLoadBalancerControllerIAMPolicy"
+}
 
-  role_name                              = var.lb_controller_role_name
-  attach_load_balancer_controller_policy = true
+# Fallback: Create the policy if it doesn't exist (some accounts may not have it)
+resource "aws_iam_policy" "lb_controller" {
+  count       = var.enable_lb_controller && var.create_lb_controller_policy ? 1 : 0
+  name        = "${var.cluster_name}-aws-load-balancer-controller"
+  description = "AWS Load Balancer Controller IAM Policy"
 
-  oidc_providers = {
-    eks = {
-      provider_arn               = var.oidc_provider_arn
-      namespace_service_accounts = ["${var.lb_controller_namespace}:${var.lb_controller_service_account}"]
-    }
-  }
+  policy = file("${path.module}/policies/aws-load-balancer-controller-policy.json")
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "lb_controller" {
+  count              = var.enable_lb_controller ? 1 : 0
+  name               = var.lb_controller_role_name
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "lb_controller" {
+  count      = var.enable_lb_controller ? 1 : 0
+  role       = aws_iam_role.lb_controller[0].name
+  policy_arn = var.create_lb_controller_policy ? aws_iam_policy.lb_controller[0].arn : data.aws_iam_policy.lb_controller[0].arn
+}
+
+resource "aws_eks_pod_identity_association" "lb_controller" {
+  count = var.enable_lb_controller ? 1 : 0
+
+  cluster_name    = var.cluster_name
+  namespace       = var.lb_controller_namespace
+  service_account = var.lb_controller_service_account
+  role_arn        = aws_iam_role.lb_controller[0].arn
 
   tags = var.tags
 }

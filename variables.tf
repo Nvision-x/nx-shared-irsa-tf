@@ -2,18 +2,8 @@
 # Common Variables
 ################################################################################
 
-variable "oidc_provider_arn" {
-  description = "OIDC provider ARN for IRSA (from nx-iam-tf or nx-infra-tf)"
-  type        = string
-}
-
-variable "oidc_issuer_url" {
-  description = "OIDC issuer URL (used for trust policy conditions)"
-  type        = string
-}
-
 variable "cluster_name" {
-  description = "EKS cluster name"
+  description = "EKS cluster name (required for Pod Identity associations)"
   type        = string
 }
 
@@ -28,31 +18,31 @@ variable "tags" {
 ################################################################################
 
 variable "enable_bedrock" {
-  description = "Enable Bedrock IRSA role"
+  description = "Enable Bedrock Pod Identity role"
   type        = bool
   default     = false
 }
 
 variable "enable_postgres_backup" {
-  description = "Enable Postgres Backup IRSA role"
+  description = "Enable Postgres Backup Pod Identity role"
   type        = bool
   default     = false
 }
 
 variable "enable_ebs_csi" {
-  description = "Enable EBS CSI Driver IRSA role"
+  description = "Enable EBS CSI Driver Pod Identity role"
   type        = bool
   default     = false
 }
 
 variable "enable_cluster_autoscaler" {
-  description = "Enable Cluster Autoscaler IRSA role"
+  description = "Enable Cluster Autoscaler Pod Identity role"
   type        = bool
   default     = false
 }
 
 variable "enable_lb_controller" {
-  description = "Enable Load Balancer Controller IRSA role"
+  description = "Enable Load Balancer Controller Pod Identity role"
   type        = bool
   default     = false
 }
@@ -261,4 +251,26 @@ variable "lb_controller_service_account" {
   description = "Kubernetes service account for Load Balancer Controller"
   type        = string
   default     = "aws-load-balancer-controller"
+}
+
+variable "create_lb_controller_policy" {
+  description = "Create the LB Controller IAM policy (set to true if AWSLoadBalancerControllerIAMPolicy doesn't exist in your account)"
+  type        = bool
+  default     = false
+}
+
+################################################################################
+# Deprecated Variables (kept for backward compatibility during migration)
+################################################################################
+
+variable "oidc_provider_arn" {
+  description = "DEPRECATED: No longer needed for Pod Identity. Kept for backward compatibility."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_issuer_url" {
+  description = "DEPRECATED: No longer needed for Pod Identity. Kept for backward compatibility."
+  type        = string
+  default     = ""
 }
