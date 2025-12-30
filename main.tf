@@ -509,3 +509,76 @@ resource "aws_eks_pod_identity_association" "lb_controller" {
 
   tags = var.tags
 }
+
+################################################################################
+# 6. Application S3 Access Pod Identity
+################################################################################
+
+locals {
+  # Parse app S3 service accounts into namespace:serviceaccount pairs
+  app_s3_sa_pairs = var.enable_app_s3_access ? [
+    for sa in var.app_s3_service_accounts : {
+      namespace       = split(":", sa)[0]
+      service_account = split(":", sa)[1]
+    }
+  ] : []
+}
+
+data "aws_iam_policy_document" "app_s3_policy" {
+  count = var.enable_app_s3_access ? 1 : 0
+
+  # S3 bucket-level permissions
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+      "s3:ListBucketMultipartUploads"
+    ]
+    resources = [var.app_s3_bucket_arn_pattern]
+  }
+
+  # S3 object-level permissions
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts"
+    ]
+    resources = ["${var.app_s3_bucket_arn_pattern}/*"]
+  }
+}
+
+resource "aws_iam_policy" "app_s3" {
+  count  = var.enable_app_s3_access ? 1 : 0
+  name   = var.app_s3_role_name != "" ? "${var.app_s3_role_name}-policy" : "${var.cluster_name}-app-s3-access-policy"
+  policy = data.aws_iam_policy_document.app_s3_policy[0].json
+  tags   = var.tags
+}
+
+resource "aws_iam_role" "app_s3" {
+  count              = var.enable_app_s3_access ? 1 : 0
+  name               = var.app_s3_role_name != "" ? var.app_s3_role_name : "${var.cluster_name}-app-s3-access"
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_trust.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "app_s3" {
+  count      = var.enable_app_s3_access ? 1 : 0
+  role       = aws_iam_role.app_s3[0].name
+  policy_arn = aws_iam_policy.app_s3[0].arn
+}
+
+resource "aws_eks_pod_identity_association" "app_s3" {
+  for_each = var.enable_app_s3_access ? { for idx, sa in local.app_s3_sa_pairs : "${sa.namespace}-${sa.service_account}" => sa } : {}
+
+  cluster_name    = var.cluster_name
+  namespace       = each.value.namespace
+  service_account = each.value.service_account
+  role_arn        = aws_iam_role.app_s3[0].arn
+
+  tags = var.tags
+}

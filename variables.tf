@@ -254,6 +254,40 @@ variable "lb_controller_service_account" {
 }
 
 ################################################################################
+# Application S3 Access Variables
+################################################################################
+
+variable "enable_app_s3_access" {
+  description = "Enable Application S3 Access Pod Identity role for application pods that need S3 access"
+  type        = bool
+  default     = false
+}
+
+variable "app_s3_role_name" {
+  description = "Name of IAM role for application S3 access. If empty, defaults to {cluster_name}-app-s3-access"
+  type        = string
+  default     = ""
+}
+
+variable "app_s3_service_accounts" {
+  description = <<-EOF
+    List of namespace:serviceaccount pairs for application S3 access.
+    Example: ["default:archiver", "default:enricher", "default:sweeper"]
+  EOF
+  type        = list(string)
+  default     = []
+}
+
+variable "app_s3_bucket_arn_pattern" {
+  description = <<-EOF
+    S3 bucket ARN pattern for application access. Supports wildcards.
+    Example: "arn:aws:s3:::nvisionx*" for all buckets starting with nvisionx
+  EOF
+  type        = string
+  default     = "arn:aws:s3:::nvisionx*"
+}
+
+################################################################################
 # Deprecated Variables (kept for backward compatibility during migration)
 ################################################################################
 

@@ -117,3 +117,27 @@ output "lb_controller_pod_identity_association_id" {
   description = "Load Balancer Controller Pod Identity association ID"
   value       = var.enable_lb_controller ? aws_eks_pod_identity_association.lb_controller[0].id : null
 }
+
+################################################################################
+# Application S3 Access Outputs
+################################################################################
+
+output "app_s3_iam_role_arn" {
+  description = "Application S3 Access IAM role ARN"
+  value       = var.enable_app_s3_access ? aws_iam_role.app_s3[0].arn : null
+}
+
+output "app_s3_iam_role_name" {
+  description = "Application S3 Access IAM role name"
+  value       = var.enable_app_s3_access ? aws_iam_role.app_s3[0].name : null
+}
+
+output "app_s3_iam_policy_arn" {
+  description = "Application S3 Access IAM policy ARN"
+  value       = var.enable_app_s3_access ? aws_iam_policy.app_s3[0].arn : null
+}
+
+output "app_s3_pod_identity_associations" {
+  description = "Map of Application S3 Access Pod Identity associations"
+  value       = var.enable_app_s3_access ? { for k, v in aws_eks_pod_identity_association.app_s3 : k => v.id } : {}
+}
