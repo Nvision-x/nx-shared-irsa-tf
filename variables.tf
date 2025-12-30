@@ -253,12 +253,6 @@ variable "lb_controller_service_account" {
   default     = "aws-load-balancer-controller"
 }
 
-variable "create_lb_controller_policy" {
-  description = "Create the LB Controller IAM policy (set to true if AWSLoadBalancerControllerIAMPolicy doesn't exist in your account)"
-  type        = bool
-  default     = false
-}
-
 ################################################################################
 # Deprecated Variables (kept for backward compatibility during migration)
 ################################################################################

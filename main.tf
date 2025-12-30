@@ -405,20 +405,10 @@ resource "aws_eks_pod_identity_association" "cluster_autoscaler" {
 # 5. Load Balancer Controller Pod Identity
 ################################################################################
 
+# Use the EKS-provided managed policy for LB Controller
 data "aws_iam_policy" "lb_controller" {
   count = var.enable_lb_controller ? 1 : 0
-  name  = "AWSLoadBalancerControllerIAMPolicy"
-}
-
-# Fallback: Create the policy if it doesn't exist (some accounts may not have it)
-resource "aws_iam_policy" "lb_controller" {
-  count       = var.enable_lb_controller && var.create_lb_controller_policy ? 1 : 0
-  name        = "${var.cluster_name}-aws-load-balancer-controller"
-  description = "AWS Load Balancer Controller IAM Policy"
-
-  policy = file("${path.module}/policies/aws-load-balancer-controller-policy.json")
-
-  tags = var.tags
+  arn   = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
 }
 
 resource "aws_iam_role" "lb_controller" {
@@ -431,7 +421,82 @@ resource "aws_iam_role" "lb_controller" {
 resource "aws_iam_role_policy_attachment" "lb_controller" {
   count      = var.enable_lb_controller ? 1 : 0
   role       = aws_iam_role.lb_controller[0].name
-  policy_arn = var.create_lb_controller_policy ? aws_iam_policy.lb_controller[0].arn : data.aws_iam_policy.lb_controller[0].arn
+  policy_arn = data.aws_iam_policy.lb_controller[0].arn
+}
+
+# Additional EC2 and WAF permissions needed for ALB Controller
+resource "aws_iam_role_policy" "lb_controller_additional" {
+  count = var.enable_lb_controller ? 1 : 0
+  name  = "${var.lb_controller_role_name}-additional"
+  role  = aws_iam_role.lb_controller[0].name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeVpcPeeringConnections",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeTags",
+          "ec2:DescribeCoipPools",
+          "ec2:GetCoipPoolUsage",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:DescribeVpcEndpointServiceConfigurations",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:DeleteSecurityGroup"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:DescribeUserPoolClient",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "iam:ListServerCertificates",
+          "iam:GetServerCertificate",
+          "waf-regional:GetWebACL",
+          "waf-regional:GetWebACLForResource",
+          "waf-regional:AssociateWebACL",
+          "waf-regional:DisassociateWebACL",
+          "wafv2:GetWebACL",
+          "wafv2:GetWebACLForResource",
+          "wafv2:AssociateWebACL",
+          "wafv2:DisassociateWebACL",
+          "shield:GetSubscriptionState",
+          "shield:DescribeProtection",
+          "shield:CreateProtection",
+          "shield:DeleteProtection"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:CreateServiceLinkedRole"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "iam:AWSServiceName" = "elasticloadbalancing.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_eks_pod_identity_association" "lb_controller" {
